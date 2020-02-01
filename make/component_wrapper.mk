@@ -91,7 +91,9 @@ COMPONENT_SUBMODULES ?=
 COMPILING_COMPONENT_PATH := $(COMPONENT_PATH)
 
 define includeCompBuildMakefile
-$(if $(V),$(info including $(1)/Makefile.componentbuild...))
+ifeq ("$(V)","1")
+$$(info including $(1)/Makefile.componentbuild...)
+endif
 COMPONENT_PATH := $(1)
 include $(1)/Makefile.componentbuild
 endef
@@ -154,8 +156,6 @@ COMPONENT_PRIV_INCLUDEDIRS ?=
 OWN_INCLUDES:=$(abspath $(addprefix $(COMPONENT_PATH)/,$(COMPONENT_PRIV_INCLUDEDIRS) $(COMPONENT_ADD_INCLUDEDIRS)))
 COMPONENT_INCLUDES := $(OWN_INCLUDES) $(filter-out $(OWN_INCLUDES),$(COMPONENT_INCLUDES))
 
-
-include $(IDF_PATH)/make/ldgen.mk
 
 ################################################################################
 # 4) Define a target to generate component_project_vars.mk Makefile which

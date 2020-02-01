@@ -77,7 +77,11 @@ esp_err_t httpd_sess_new(struct httpd_data *hd, int newfd)
             /* Call user-defined session opening function */
             if (hd->config.open_fn) {
                 esp_err_t ret = hd->config.open_fn(hd, hd->hd_sd[i].fd);
-                if (ret != ESP_OK) return ret;
+                if (ret != ESP_OK) {
+                    httpd_sess_delete(hd, hd->hd_sd[i].fd);
+                    ESP_LOGD(TAG, LOG_FMT("open_fn failed for fd = %d"), newfd);
+                    return ret;
+                }
             }
             return ESP_OK;
         }
@@ -195,6 +199,12 @@ static int fd_is_valid(int fd)
     return fcntl(fd, F_GETFD) != -1 || errno != EBADF;
 }
 
+static inline uint64_t httpd_sess_get_lru_counter(void)
+{
+    static uint64_t lru_counter = 0;
+    return lru_counter++;
+}
+
 void httpd_sess_delete_invalid(struct httpd_data *hd)
 {
     for (int i = 0; i < hd->config.max_open_sockets; i++) {
@@ -297,11 +307,11 @@ esp_err_t httpd_sess_process(struct httpd_data *hd, int newfd)
         return ESP_FAIL;
     }
     ESP_LOGD(TAG, LOG_FMT("success"));
-    sd->timestamp = httpd_os_get_timestamp();
+    sd->lru_counter = httpd_sess_get_lru_counter();
     return ESP_OK;
 }
 
-esp_err_t httpd_sess_update_timestamp(httpd_handle_t handle, int sockfd)
+esp_err_t httpd_sess_update_lru_counter(httpd_handle_t handle, int sockfd)
 {
     if (handle == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -312,7 +322,7 @@ esp_err_t httpd_sess_update_timestamp(httpd_handle_t handle, int sockfd)
     int i;
     for (i = 0; i < hd->config.max_open_sockets; i++) {
         if (hd->hd_sd[i].fd == sockfd) {
-            hd->hd_sd[i].timestamp = httpd_os_get_timestamp();
+            hd->hd_sd[i].lru_counter = httpd_sess_get_lru_counter();
             return ESP_OK;
         }
     }
@@ -321,7 +331,7 @@ esp_err_t httpd_sess_update_timestamp(httpd_handle_t handle, int sockfd)
 
 esp_err_t httpd_sess_close_lru(struct httpd_data *hd)
 {
-    int64_t timestamp = INT64_MAX;
+    uint64_t lru_counter = UINT64_MAX;
     int lru_fd = -1;
     int i;
     for (i = 0; i < hd->config.max_open_sockets; i++) {
@@ -332,8 +342,8 @@ esp_err_t httpd_sess_close_lru(struct httpd_data *hd)
         if (hd->hd_sd[i].fd == -1) {
             return ESP_OK;
         }
-        if (hd->hd_sd[i].timestamp < timestamp) {
-            timestamp = hd->hd_sd[i].timestamp;
+        if (hd->hd_sd[i].lru_counter < lru_counter) {
+            lru_counter = hd->hd_sd[i].lru_counter;
             lru_fd = hd->hd_sd[i].fd;
         }
     }
@@ -368,6 +378,10 @@ static void httpd_sess_close(void *arg)
 {
     struct sock_db *sock_db = (struct sock_db *)arg;
     if (sock_db) {
+        if (sock_db->lru_counter == 0) {
+            ESP_LOGD(TAG, "Skipping session close for %d as it seems to be a race condition", sock_db->fd);
+            return;
+        }
         int fd = sock_db->fd;
         struct httpd_data *hd = (struct httpd_data *) sock_db->handle;
         httpd_sess_delete(hd, fd);

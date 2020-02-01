@@ -22,20 +22,17 @@
 #
 from __future__ import print_function
 from __future__ import unicode_literals
+from __future__ import division
 import argparse
-import re
+import collections
+import json
 import os.path
+import re
+import sys
 
 DEFAULT_TOOLCHAIN_PREFIX = "xtensa-esp32-elf-"
-
-CHIP_SIZES = {
-    "esp32": {
-        "total_iram": 0x20000,
-        "total_irom": 0x330000,
-        "total_drom": 0x800000,
-        # total dram is determined from objdump output
-    }
-}
+GLOBAL_JSON_INDENT = 4
+GLOBAL_JSON_SEPARATORS = (',', ': ')
 
 
 def scan_to_header(f, header_line):
@@ -44,6 +41,10 @@ def scan_to_header(f, header_line):
         if line.strip() == header_line:
             return
     raise RuntimeError("Didn't find line '%s' in file" % header_line)
+
+
+def format_json(json_object):
+    return json.dumps(json_object, indent=GLOBAL_JSON_INDENT, separators=GLOBAL_JSON_SEPARATORS) + "\n"
 
 
 def load_map_data(map_file):
@@ -56,9 +57,10 @@ def load_memory_config(map_file):
     """ Memory Configuration section is the total size of each output section """
     result = {}
     scan_to_header(map_file, "Memory Configuration")
-    RE_MEMORY_SECTION = r"(?P<name>[^ ]+) +0x(?P<origin>[\da-f]+) +0x(?P<length>[\da-f]+)"
+    RE_MEMORY_SECTION = re.compile(r"(?P<name>[^ ]+) +0x(?P<origin>[\da-f]+) +0x(?P<length>[\da-f]+)")
+
     for line in map_file:
-        m = re.match(RE_MEMORY_SECTION, line)
+        m = RE_MEMORY_SECTION.match(line)
         if m is None:
             if len(result) == 0:
                 continue  # whitespace or a header, before the content we want
@@ -82,13 +84,32 @@ def load_sections(map_file):
     information for each symbol linked into the section.
     """
     scan_to_header(map_file, "Linker script and memory map")
+
+    # output section header, ie '.iram0.text     0x0000000040080400    0x129a5'
+    RE_SECTION_HEADER = re.compile(r"(?P<name>[^ ]+) +0x(?P<address>[\da-f]+) +0x(?P<size>[\da-f]+)$")
+
+    # source file line, ie
+    # 0x0000000040080400       0xa4 /home/gus/esp/32/idf/examples/get-started/hello_world/build/esp32/libesp32.a(cpu_start.o)
+    # cmake build system links some object files directly, not part of any archive, so make that part optional
+    #  .xtensa.info   0x0000000000000000       0x38 CMakeFiles/hello-world.elf.dir/project_elf_src.c.obj
+    RE_SOURCE_LINE = re.compile(r"\s*(?P<sym_name>\S*) +0x(?P<address>[\da-f]+) +0x(?P<size>[\da-f]+) (?P<archive>.+\.a)?\(?(?P<object_file>.+\.(o|obj))\)?")
+
+    # Fast check to see if line is a potential source line before running the slower full regex against it
+    RE_PRE_FILTER = re.compile(r".*\.(o|obj)\)?")
+
+    # Check for lines which only contain the sym name (and rest is on following lines)
+    RE_SYMBOL_ONLY_LINE = re.compile(r"^ (?P<sym_name>\S*)$")
+
     sections = {}
     section = None
     sym_backup = None
     for line in map_file:
-        # output section header, ie '.iram0.text     0x0000000040080400    0x129a5'
-        RE_SECTION_HEADER = r"(?P<name>[^ ]+) +0x(?P<address>[\da-f]+) +0x(?P<size>[\da-f]+)$"
-        m = re.match(RE_SECTION_HEADER, line)
+
+        if line.strip() == "Cross Reference Table":
+            # stop processing lines because we are at the next section in the map file
+            break
+
+        m = RE_SECTION_HEADER.match(line)
         if m is not None:  # start of a new section
             section = {
                 "name": m.group("name"),
@@ -99,37 +120,34 @@ def load_sections(map_file):
             sections[section["name"]] = section
             continue
 
-        # source file line, ie
-        # 0x0000000040080400       0xa4 /home/gus/esp/32/idf/examples/get-started/hello_world/build/esp32/libesp32.a(cpu_start.o)
-        RE_SOURCE_LINE = r"\s*(?P<sym_name>\S*).* +0x(?P<address>[\da-f]+) +0x(?P<size>[\da-f]+) (?P<archive>.+\.a)\((?P<object_file>.+\.ob?j?)\)"
+        if section is not None:
+            m = RE_SYMBOL_ONLY_LINE.match(line)
+            if m is not None:
+                # In some cases the section name appears on the previous line, back it up in here
+                sym_backup = m.group("sym_name")
+                continue
 
-        m = re.match(RE_SOURCE_LINE, line, re.M)
-        if not m:
-            # cmake build system links some object files directly, not part of any archive
-            RE_SOURCE_LINE = r"\s*(?P<sym_name>\S*).* +0x(?P<address>[\da-f]+) +0x(?P<size>[\da-f]+) (?P<object_file>.+\.ob?j?)"
-            m = re.match(RE_SOURCE_LINE, line)
-        if section is not None and m is not None:  # input source file details=ma,e
-            sym_name = m.group("sym_name") if len(m.group("sym_name")) > 0 else sym_backup
-            try:
+            if not RE_PRE_FILTER.match(line):
+                # line does not match our quick check, so skip to next line
+                continue
+
+            m = RE_SOURCE_LINE.match(line)
+            if m is not None:  # input source file details=ma,e
+                sym_name = m.group("sym_name") if len(m.group("sym_name")) > 0 else sym_backup
                 archive = m.group("archive")
-            except IndexError:
-                archive = "(exe)"
+                if archive is None:
+                    # optional named group "archive" was not matched, so assign a value to it
+                    archive = "(exe)"
 
-            source = {
-                "size": int(m.group("size"), 16),
-                "address": int(m.group("address"), 16),
-                "archive": os.path.basename(archive),
-                "object_file": os.path.basename(m.group("object_file")),
-                "sym_name": sym_name,
-            }
-            source["file"] = "%s:%s" % (source["archive"], source["object_file"])
-            section["sources"] += [source]
-
-        # In some cases the section name appears on the previous line, back it up in here
-        RE_SYMBOL_ONLY_LINE = r"^ (?P<sym_name>\S*)$"
-        m = re.match(RE_SYMBOL_ONLY_LINE, line)
-        if section is not None and m is not None:
-            sym_backup = m.group("sym_name")
+                source = {
+                    "size": int(m.group("size"), 16),
+                    "address": int(m.group("address"), 16),
+                    "archive": os.path.basename(archive),
+                    "object_file": os.path.basename(m.group("object_file")),
+                    "sym_name": sym_name,
+                }
+                source["file"] = "%s:%s" % (source["archive"], source["object_file"])
+                section["sources"] += [source]
 
     return sections
 
@@ -161,6 +179,11 @@ def main():
         default=DEFAULT_TOOLCHAIN_PREFIX)
 
     parser.add_argument(
+        '--json',
+        help="Output results as JSON",
+        action="store_true")
+
+    parser.add_argument(
         'map_file', help='MAP file produced by linker',
         type=argparse.FileType('r'))
 
@@ -173,23 +196,33 @@ def main():
     parser.add_argument(
         '--files', help='Print per-file sizes', action='store_true')
 
+    parser.add_argument(
+        '-o',
+        '--output-file',
+        type=argparse.FileType('w'),
+        default=sys.stdout,
+        help="Print output to the specified file instead of stdout")
+
     args = parser.parse_args()
 
+    output = ""
+
     memory_config, sections = load_map_data(args.map_file)
-    print_summary(memory_config, sections)
+    if not args.json or not (args.archives or args.files or args.archive_details):
+        output += get_summary(memory_config, sections, args.json)
 
     if args.archives:
-        print("Per-archive contributions to ELF file:")
-        print_detailed_sizes(sections, "archive", "Archive File")
+        output += get_detailed_sizes(sections, "archive", "Archive File", args.json)
     if args.files:
-        print("Per-file contributions to ELF file:")
-        print_detailed_sizes(sections, "file", "Object File")
+        output += get_detailed_sizes(sections, "file", "Object File", args.json)
+
     if args.archive_details:
-        print("Symbols within the archive:", args.archive_details, "(Not all symbols may be reported)")
-        print_archive_symbols(sections, args.archive_details)
+        output += get_archive_symbols(sections, args.archive_details, args.json)
+
+    args.output_file.write(output)
 
 
-def print_summary(memory_config, sections):
+def get_summary(memory_config, sections, as_json=False):
     def get_size(section):
         try:
             return sections[section]["size"]
@@ -202,40 +235,56 @@ def print_summary(memory_config, sections):
     used_data = get_size(".dram0.data")
     used_bss = get_size(".dram0.bss")
     used_dram = used_data + used_bss
+    try:
+        used_dram_ratio = used_dram / total_dram
+    except ZeroDivisionError:
+        used_dram_ratio = float('nan')
     used_iram = sum(get_size(s) for s in sections if s.startswith(".iram0"))
+    try:
+        used_iram_ratio = used_iram / total_iram
+    except ZeroDivisionError:
+        used_iram_ratio = float('nan')
     flash_code = get_size(".flash.text")
     flash_rodata = get_size(".flash.rodata")
     total_size = used_data + used_iram + flash_code + flash_rodata
 
-    print("Total sizes:")
-    print(" DRAM .data size: %7d bytes" % used_data)
-    print(" DRAM .bss  size: %7d bytes" % used_bss)
-    print("Used static DRAM: %7d bytes (%7d available, %.1f%% used)" %
-          (used_dram, total_dram - used_dram,
-           100.0 * used_dram / total_dram))
-    print("Used static IRAM: %7d bytes (%7d available, %.1f%% used)" %
-          (used_iram, total_iram - used_iram,
-           100.0 * used_iram / total_iram))
-    print("      Flash code: %7d bytes" % flash_code)
-    print("    Flash rodata: %7d bytes" % flash_rodata)
-    print("Total image size:~%7d bytes (.bin may be padded larger)" % (total_size))
+    output = ""
+    if as_json:
+        output = format_json(collections.OrderedDict([
+            ("dram_data", used_data),
+            ("dram_bss", used_bss),
+            ("used_dram", used_dram),
+            ("available_dram", total_dram - used_dram),
+            ("used_dram_ratio", used_dram_ratio),
+            ("used_iram", used_iram),
+            ("available_iram", total_iram - used_iram),
+            ("used_iram_ratio", used_iram_ratio),
+            ("flash_code", flash_code),
+            ("flash_rodata", flash_rodata),
+            ("total_size", total_size)
+        ]))
+    else:
+        output += "Total sizes:\n"
+        output += " DRAM .data size: {:>7} bytes\n".format(used_data)
+        output += " DRAM .bss  size: {:>7} bytes\n".format(used_bss)
+        output += "Used static DRAM: {:>7} bytes ({:>7} available, {:.1%} used)\n".format(
+            used_dram, total_dram - used_dram, used_dram_ratio)
+        output += "Used static IRAM: {:>7} bytes ({:>7} available, {:.1%} used)\n".format(
+            used_iram, total_iram - used_iram, used_iram_ratio)
+        output += "      Flash code: {:>7} bytes\n".format(flash_code)
+        output += "    Flash rodata: {:>7} bytes\n".format(flash_rodata)
+        output += "Total image size:~{:>7} bytes (.bin may be padded larger)\n".format(total_size)
+
+    return output
 
 
-def print_detailed_sizes(sections, key, header):
+def get_detailed_sizes(sections, key, header, as_json=False):
     sizes = sizes_by_key(sections, key)
 
-    headings = (header,
-                "DRAM .data",
-                "& .bss",
-                "IRAM",
-                "Flash code",
-                "& rodata",
-                "Total")
-    print("%24s %10s %6s %6s %10s %8s %7s" % headings)
     result = {}
     for k in sizes:
         v = sizes[k]
-        result[k] = {}
+        result[k] = collections.OrderedDict()
         result[k]["data"] = v.get(".dram0.data", 0)
         result[k]["bss"] = v.get(".dram0.bss", 0)
         result[k]["iram"] = sum(t for (s,t) in v.items() if s.startswith(".iram0"))
@@ -250,20 +299,41 @@ def print_detailed_sizes(sections, key, header):
     def return_header(elem):
         return elem[0]
     s = sorted(list(result.items()), key=return_header)
+
     # do a secondary sort in order to have consistent order (for diff-ing the output)
-    for k,v in sorted(s, key=return_total_size, reverse=True):
-        if ":" in k:  # print subheadings for key of format archive:file
-            sh,k = k.split(":")
-        print("%24s %10d %6d %6d %10d %8d %7d" % (k[:24],
-                                                  v["data"],
-                                                  v["bss"],
-                                                  v["iram"],
-                                                  v["flash_text"],
-                                                  v["flash_rodata"],
-                                                  v["total"]))
+    s = sorted(s, key=return_total_size, reverse=True)
+
+    output = ""
+
+    if as_json:
+        output = format_json(collections.OrderedDict(s))
+    else:
+        header_format = "{:>24} {:>10} {:>6} {:>6} {:>10} {:>8} {:>7}\n"
+
+        output += "Per-{} contributions to ELF file:\n".format(key)
+        output += header_format.format(header,
+                                       "DRAM .data",
+                                       "& .bss",
+                                       "IRAM",
+                                       "Flash code",
+                                       "& rodata",
+                                       "Total")
+
+        for k,v in s:
+            if ":" in k:  # print subheadings for key of format archive:file
+                sh,k = k.split(":")
+            output += header_format.format(k[:24],
+                                           v["data"],
+                                           v["bss"],
+                                           v["iram"],
+                                           v["flash_text"],
+                                           v["flash_rodata"],
+                                           v["total"])
+
+    return output
 
 
-def print_archive_symbols(sections, archive):
+def get_archive_symbols(sections, archive, as_json=False):
     interested_sections = [".dram0.data", ".dram0.bss", ".iram0.text", ".iram0.vectors", ".flash.text", ".flash.rodata"]
     result = {}
     for t in interested_sections:
@@ -277,15 +347,29 @@ def print_archive_symbols(sections, archive):
                 continue
             s["sym_name"] = re.sub("(.text.|.literal.|.data.|.bss.|.rodata.)", "", s["sym_name"])
             result[section_name][s["sym_name"]] = result[section_name].get(s["sym_name"], 0) + s["size"]
+
+    # build a new ordered dict of each section, where each entry is an ordereddict of symbols to sizes
+    section_symbols = collections.OrderedDict()
     for t in interested_sections:
-        print("\nSymbols from section:", t)
-        section_total = 0
         s = sorted(list(result[t].items()), key=lambda k_v: k_v[0])
         # do a secondary sort in order to have consistent order (for diff-ing the output)
-        for key,val in sorted(s, key=lambda k_v: k_v[1], reverse=True):
-            print(("%s(%d)" % (key.replace(t + ".", ""), val)), end=' ')
-            section_total += val
-        print("\nSection total:",section_total)
+        s = sorted(s, key=lambda k_v: k_v[1], reverse=True)
+        section_symbols[t] = collections.OrderedDict(s)
+
+    output = ""
+    if as_json:
+        output = format_json(section_symbols)
+    else:
+        output += "Symbols within the archive: {} (Not all symbols may be reported)\n".format(archive)
+        for t,s in section_symbols.items():
+            section_total = 0
+            output += "\nSymbols from section: {}\n".format(t)
+            for key, val in s.items():
+                output += "{}({}) ".format(key.replace(t + ".", ""), val)
+                section_total += val
+            output += "\nSection total: {}\n".format(section_total)
+
+    return output
 
 
 if __name__ == "__main__":

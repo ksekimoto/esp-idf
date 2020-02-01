@@ -16,6 +16,10 @@
 
 #include <esp_err.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief   Proof Of Possession for authenticating a secure session
  */
@@ -31,6 +35,8 @@ typedef struct protocomm_security_pop {
     uint16_t len;
 } protocomm_security_pop_t;
 
+typedef void * protocomm_security_handle_t;
+
 /**
  * @brief   Protocomm security object structure.
  *
@@ -42,36 +48,39 @@ typedef struct protocomm_security_pop {
  */
 typedef struct protocomm_security {
     /**
-     * Unique version number of security implmentation
+     * Unique version number of security implementation
      */
     int ver;
 
     /**
-     * Function for initialising/allocating security
+     * Function for initializing/allocating security
      * infrastructure
      */
-    esp_err_t (*init)();
+    esp_err_t (*init)(protocomm_security_handle_t *handle);
 
     /**
      * Function for deallocating security infrastructure
      */
-    esp_err_t (*cleanup)();
+    esp_err_t (*cleanup)(protocomm_security_handle_t handle);
 
     /**
      * Starts new secure transport session with specified ID
      */
-    esp_err_t (*new_transport_session)(uint32_t session_id);
+    esp_err_t (*new_transport_session)(protocomm_security_handle_t handle,
+                                       uint32_t session_id);
 
     /**
      * Closes a secure transport session with specified ID
      */
-    esp_err_t (*close_transport_session)(uint32_t session_id);
+    esp_err_t (*close_transport_session)(protocomm_security_handle_t handle,
+                                         uint32_t session_id);
 
     /**
      * Handler function for authenticating connection
      * request and establishing secure session
      */
-    esp_err_t (*security_req_handler)(const protocomm_security_pop_t *pop,
+    esp_err_t (*security_req_handler)(protocomm_security_handle_t handle,
+                                      const protocomm_security_pop_t *pop,
                                       uint32_t session_id,
                                       const uint8_t *inbuf, ssize_t inlen,
                                       uint8_t **outbuf, ssize_t *outlen,
@@ -80,14 +89,20 @@ typedef struct protocomm_security {
     /**
      * Function which implements the encryption algorithm
      */
-    esp_err_t (*encrypt)(uint32_t session_id,
+    esp_err_t (*encrypt)(protocomm_security_handle_t handle,
+                         uint32_t session_id,
                          const uint8_t *inbuf, ssize_t inlen,
                          uint8_t *outbuf, ssize_t *outlen);
 
     /**
      * Function which implements the decryption algorithm
      */
-    esp_err_t (*decrypt)(uint32_t session_id,
+    esp_err_t (*decrypt)(protocomm_security_handle_t handle,
+                         uint32_t session_id,
                          const uint8_t *inbuf, ssize_t inlen,
                          uint8_t *outbuf, ssize_t *outlen);
 } protocomm_security_t;
+
+#ifdef __cplusplus
+}
+#endif

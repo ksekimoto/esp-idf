@@ -25,13 +25,14 @@
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/sdmmc_host.h"
 #include "driver/sdmmc_defs.h"
 #include "sdmmc_cmd.h"
-#include "diskio.h"
 #include "ff.h"
 #include "test_fatfs_common.h"
+#include "soc/soc_caps.h"
 
+#ifdef SOC_SDMMC_HOST_SUPPORTED
+#include "driver/sdmmc_host.h"
 
 static void test_setup(void)
 {
@@ -87,6 +88,20 @@ TEST_CASE("(SD) can read file", "[fatfs][test_env=UT_T1_SDMODE]")
     test_teardown();
 }
 
+TEST_CASE("(SD) can read file with pread()", "[fatfs][test_env=UT_T1_SDMODE]")
+{
+    test_setup();
+    test_fatfs_create_file_with_text(test_filename, fatfs_test_hello_str);
+    test_fatfs_pread_file(test_filename);
+    test_teardown();
+}
+
+TEST_CASE("(SD) pwrite() works well", "[fatfs][test_env=UT_T1_SDMODE]")
+{
+    test_setup();
+    test_fatfs_pwrite_file(test_filename);
+    test_teardown();
+}
 
 TEST_CASE("(SD) overwrite and append file", "[fatfs][sd][test_env=UT_T1_SDMODE]")
 {
@@ -281,3 +296,5 @@ TEST_CASE("(SD) opendir, readdir, rewinddir, seekdir work as expected using UTF-
     test_teardown();
 }
 #endif // CONFIG_FATFS_API_ENCODING_UTF_8 && CONFIG_FATFS_CODEPAGE == 936
+
+#endif

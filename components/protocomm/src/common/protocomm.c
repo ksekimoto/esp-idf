@@ -17,7 +17,7 @@
 
 #include <esp_err.h>
 #include <esp_log.h>
-#include <rom/queue.h>
+#include <sys/queue.h>
 
 #include <protocomm.h>
 #include <protocomm_security.h>
@@ -26,7 +26,7 @@
 
 static const char *TAG = "protocomm";
 
-protocomm_t *protocomm_new()
+protocomm_t *protocomm_new(void)
 {
     protocomm_t *pc;
 
@@ -50,6 +50,19 @@ void protocomm_delete(protocomm_t *pc)
     /* Remove endpoints first */
     SLIST_FOREACH_SAFE(it, &pc->endpoints, next, tmp) {
         free(it);
+    }
+
+    /* Free memory allocated to version string */
+    if (pc->ver) {
+        free((void *)pc->ver);
+    }
+
+    /* Free memory allocated to security */
+    if (pc->sec && pc->sec->cleanup) {
+        pc->sec->cleanup(pc->sec_inst);
+    }
+    if (pc->pop) {
+        free(pc->pop);
     }
 
     free(pc);
@@ -136,14 +149,49 @@ esp_err_t protocomm_remove_endpoint(protocomm_t *pc, const char *ep_name)
     return ESP_ERR_NOT_FOUND;
 }
 
+esp_err_t protocomm_open_session(protocomm_t *pc, uint32_t session_id)
+{
+    if (!pc) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (pc->sec && pc->sec->new_transport_session) {
+        esp_err_t ret = pc->sec->new_transport_session(pc->sec_inst, session_id);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to launch new session with ID: %d", session_id);
+            return ret;
+        }
+    }
+    return ESP_OK;
+}
+
+esp_err_t protocomm_close_session(protocomm_t *pc, uint32_t session_id)
+{
+    if (!pc) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (pc->sec && pc->sec->close_transport_session) {
+        esp_err_t ret = pc->sec->close_transport_session(pc->sec_inst, session_id);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Error while closing session with ID: %d", session_id);
+            return ret;
+        }
+    }
+    return ESP_OK;
+}
+
 esp_err_t protocomm_req_handle(protocomm_t *pc, const char *ep_name, uint32_t session_id,
                                const uint8_t *inbuf, ssize_t inlen,
                                uint8_t **outbuf, ssize_t *outlen)
 {
-    if ((pc == NULL) || (ep_name == NULL)) {
+    if (!pc || !ep_name || !outbuf || !outlen) {
         ESP_LOGE(TAG, "Invalid params %p %p", pc, ep_name);
         return ESP_ERR_INVALID_ARG;
     }
+
+    *outbuf = NULL;
+    *outlen = 0;
 
     protocomm_ep_t *ep = search_endpoint(pc, ep_name);
     if (!ep) {
@@ -166,19 +214,23 @@ esp_err_t protocomm_req_handle(protocomm_t *pc, const char *ep_name, uint32_t se
             }
 
             ssize_t dec_inbuf_len = inlen;
-            pc->sec->decrypt(session_id, inbuf, inlen, dec_inbuf, &dec_inbuf_len);
+            ret = pc->sec->decrypt(pc->sec_inst, session_id, inbuf, inlen, dec_inbuf, &dec_inbuf_len);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Decryption of response failed for endpoint %s", ep_name);
+                free(dec_inbuf);
+                return ret;
+            }
 
             /* Invoke the request handler */
-            uint8_t *plaintext_resp;
-            ssize_t plaintext_resp_len;
+            uint8_t *plaintext_resp = NULL;
+            ssize_t plaintext_resp_len = 0;
             ret = ep->req_handler(session_id,
                                   dec_inbuf, dec_inbuf_len,
                                   &plaintext_resp, &plaintext_resp_len,
                                   ep->priv_data);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "Request handler for %s failed", ep_name);
-                *outbuf = NULL;
-                *outlen = 0;
+                free(plaintext_resp);
                 free(dec_inbuf);
                 return ret;
             }
@@ -189,12 +241,20 @@ esp_err_t protocomm_req_handle(protocomm_t *pc, const char *ep_name, uint32_t se
             uint8_t *enc_resp = (uint8_t *) malloc(plaintext_resp_len);
             if (!enc_resp) {
                 ESP_LOGE(TAG, "Failed to allocate decrypt buf len %d", inlen);
+                free(plaintext_resp);
                 return ESP_ERR_NO_MEM;
             }
 
             ssize_t enc_resp_len = plaintext_resp_len;
-            pc->sec->encrypt(session_id, plaintext_resp, plaintext_resp_len,
-                             enc_resp, &enc_resp_len);
+            ret = pc->sec->encrypt(pc->sec_inst, session_id, plaintext_resp, plaintext_resp_len,
+                                   enc_resp, &enc_resp_len);
+
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Encryption of response failed for endpoint %s", ep_name);
+                free(enc_resp);
+                free(plaintext_resp);
+                return ret;
+            }
 
             /* We no more need plaintext response */
             free(plaintext_resp);
@@ -225,7 +285,8 @@ static int protocomm_common_security_handler(uint32_t session_id,
     protocomm_t *pc = (protocomm_t *) priv_data;
 
     if (pc->sec && pc->sec->security_req_handler) {
-        return pc->sec->security_req_handler(pc->pop, session_id,
+        return pc->sec->security_req_handler(pc->sec_inst,
+                                             pc->pop, session_id,
                                              inbuf, inlen,
                                              outbuf, outlen,
                                              priv_data);
@@ -255,9 +316,9 @@ esp_err_t protocomm_set_security(protocomm_t *pc, const char *ep_name,
     }
 
     if (sec->init) {
-        ret = sec->init();
+        ret = sec->init(&pc->sec_inst);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Error initialising security");
+            ESP_LOGE(TAG, "Error initializing security");
             protocomm_remove_endpoint(pc, ep_name);
             return ret;
         }
@@ -269,7 +330,8 @@ esp_err_t protocomm_set_security(protocomm_t *pc, const char *ep_name,
         if (pc->pop == NULL) {
             ESP_LOGE(TAG, "Error allocating Proof of Possession");
             if (pc->sec && pc->sec->cleanup) {
-                pc->sec->cleanup();
+                pc->sec->cleanup(pc->sec_inst);
+                pc->sec_inst = NULL;
                 pc->sec = NULL;
             }
 
@@ -288,7 +350,8 @@ esp_err_t protocomm_unset_security(protocomm_t *pc, const char *ep_name)
     }
 
     if (pc->sec && pc->sec->cleanup) {
-        pc->sec->cleanup();
+        pc->sec->cleanup(pc->sec_inst);
+        pc->sec_inst = NULL;
         pc->sec = NULL;
     }
 
@@ -305,40 +368,22 @@ static int protocomm_version_handler(uint32_t session_id,
                                      uint8_t **outbuf, ssize_t *outlen,
                                      void *priv_data)
 {
-    const char *resp_match = "SUCCESS";
-    const char *resp_fail  = "FAIL";
-    bool match = false;
-    char *version = strndup((const char *)inbuf, inlen);
     protocomm_t *pc = (protocomm_t *) priv_data;
-    *outbuf = NULL;
-    *outlen = 0;
-
-    if ((pc->ver != NULL) && (version != NULL)) {
-        ESP_LOGV(TAG, "Protocol version of device : %s", pc->ver);
-        ESP_LOGV(TAG, "Protocol version of client : %s", version);
-        if (strcmp(pc->ver, version) == 0) {
-            match = true;
-        }
-    } else if ((pc->ver == NULL) && (version == NULL)) {
-        match = true;
+    if (!pc->ver) {
+        *outlen = 0;
+        *outbuf = NULL;
+        return ESP_OK;
     }
-    free(version);
-
-    if (!match) {
-        ESP_LOGE(TAG, "Protocol version mismatch");
-    }
-
-    const char *result_msg = match ? resp_match : resp_fail;
 
     /* Output is a non null terminated string with length specified */
-    *outlen = strlen(result_msg);
-    *outbuf = malloc(strlen(result_msg));
+    *outlen = strlen(pc->ver);
+    *outbuf = malloc(*outlen);
     if (outbuf == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for version check response");
+        ESP_LOGE(TAG, "Failed to allocate memory for version response");
         return ESP_ERR_NO_MEM;
     }
 
-    memcpy(*outbuf, result_msg, *outlen);
+    memcpy(*outbuf, pc->ver, *outlen);
     return ESP_OK;
 }
 

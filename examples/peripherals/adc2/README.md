@@ -8,15 +8,24 @@ In this example, we use ADC2 to measure the output of DAC.
 
 ### Hardware Required
 
+#### ESP32 platform
+
 * A development board with ESP32 SoC (e.g., ESP32-DevKitC, ESP-WROVER-KIT, etc.)
 * A USB cable for power supply and programming
 
 We use ADC1_CHANNEL_7 (GPIO27) and DAC_CHANNEL_1 (GPIO25) by default, you need to short the two GPIOs (if you have changed the ADC2 and DAC channel, please refer to Chapter 4.11 of the `ESP32 Technical Reference Manual` to get the pin number).
 
+#### ESP32-S2 platform
+
+* A development board with ESP32S2 SoC
+* A USB cable for power supply and programming
+
+We use ADC1_CHANNEL_7 (GPIO18) and DAC_CHANNEL_1 (GPIO17) by default, you need to short the two GPIOs (if you have changed the ADC2 and DAC channel, please refer to the `ESP32S2 Technical Reference Manual` to get the pin number).
+
 ### Configure the project
 
 ```
-make menuconfig
+idf.py menuconfig
 ```
 
 * Set serial port under Serial Flasher Options.
@@ -27,7 +36,7 @@ make menuconfig
 Build the project and flash it to the board, then run monitor tool to view serial output:
 
 ```
-make -j4 flash monitor
+idf.py -p PORT flash monitor
 ```
 
 (To exit the serial monitor, type ``Ctrl-]``.)
@@ -38,8 +47,29 @@ See the Getting Started Guide for full steps to configure and use ESP-IDF to bui
 
 Running this example, you will see the following log output on the serial monitor:
 
+### ESP32 platform
+
 ```
 ADC channel 7 @ GPIO 27, DAC channel 1 @ GPIO 25.
+adc2_init...
+start conversion.
+1: 150
+2: 203
+3: 250
+4: 300
+5: 351
+6: 400
+7: 441
+8: 491
+9: 547
+10: 595
+...
+```
+
+#### ESP32-S2 platform
+
+```
+ADC channel 7 @ GPIO 18, DAC channel 1 @ GPIO 17.
 adc2_init...
 start conversion.
 1: 150
@@ -59,7 +89,7 @@ start conversion.
 
 * program upload failure
 
-    * Hardware connection is not correct: run `make monitor`, and reboot your board to see if there are any output logs.
+    * Hardware connection is not correct: run `idf.py -p PORT monitor`, and reboot your board to see if there are any output logs.
     * The baud rate for downloading is too high: lower your baud rate in the `menuconfig` menu, and try again.
 
 For any technical queries, please open an [issue](https://github.com/espressif/esp-idf/issues) on GitHub. We will get back to you soon.

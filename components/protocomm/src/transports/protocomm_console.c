@@ -76,7 +76,7 @@ static void protocomm_console_task(void *arg)
     QueueHandle_t uart_queue;
     uart_event_t event;
 
-    ESP_LOGV(TAG, "Initialising UART on port %d", uart_num);
+    ESP_LOGD(TAG, "Initializing UART on port %d", uart_num);
     uart_driver_install(uart_num, 256, 0, 8, &uart_queue, 0);
     /* Initialize the console */
     esp_console_config_t console_config = {
@@ -121,10 +121,6 @@ static void protocomm_console_task(void *arg)
         }
     }
 
-    if (pc_console->sec && pc_console->sec->cleanup) {
-        pc_console->sec->cleanup();
-    }
-
     pc_console = NULL;
     esp_console_deinit();
 
@@ -149,7 +145,7 @@ static int common_cmd_handler(int argc, char** argv)
 
     if (cur_session_id != session_id) {
         if (pc_console->sec && pc_console->sec->new_transport_session) {
-            ret = pc_console->sec->new_transport_session(cur_session_id);
+            ret = pc_console->sec->new_transport_session(pc_console->sec_inst, cur_session_id);
             if (ret == ESP_OK) {
                 session_id = cur_session_id;
             }

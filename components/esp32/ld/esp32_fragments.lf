@@ -44,10 +44,22 @@ entries:
 entries:
     .dram1+
 
+[sections:wifi_iram]
+entries:
+    .wifi0iram+
+
+[sections:wifi_rx_iram]
+entries:
+    .wifirxiram+
+
 [scheme:default]
 entries:
-    text -> flash_text
-    rodata -> flash_rodata
+    if APP_BUILD_USE_FLASH_SECTIONS = y:
+        text -> flash_text
+        rodata -> flash_rodata
+    else:
+        text -> iram0_text
+        rodata -> dram0_data
     data -> dram0_data
     bss -> dram0_bss
     common -> dram0_bss
@@ -57,6 +69,8 @@ entries:
     rtc_data -> rtc_data
     rtc_rodata -> rtc_data
     rtc_bss -> rtc_bss
+    wifi_iram -> flash_text
+    wifi_rx_iram -> flash_text
 
 [scheme:rtc]
 entries:
@@ -78,3 +92,11 @@ entries:
 [scheme:noflash_text]
 entries:
     text -> iram0_text
+
+[scheme:wifi_iram]
+entries:
+    wifi_iram -> iram0_text
+
+[scheme:wifi_rx_iram]
+entries:
+    wifi_rx_iram -> iram0_text

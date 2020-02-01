@@ -86,6 +86,8 @@ specific constants has been moved into the deprecated_definitions.h header
 file. */
 #include "deprecated_definitions.h"
 
+#include "soc/cpu.h"
+
 /* If portENTER_CRITICAL is not defined then including deprecated_definitions.h
 did not result in a portmacro.h header file being included - and it should be
 included here.  In this case the path to the correct portmacro.h header file
@@ -178,16 +180,10 @@ void vPortYieldOtherCore( BaseType_t coreid) PRIVILEGED_FUNCTION;
 void vPortSetStackWatchpoint( void* pxStackStart );
 
 /*
- * Returns true if the current core is in ISR context; low prio ISR, med prio ISR or timer tick ISR. High prio ISRs
- * aren't detected here, but they normally cannot call C code, so that should not be an issue anyway.
- */
-BaseType_t xPortInIsrContext();
-
-/*
  * This function will be called in High prio ISRs. Returns true if the current core was in ISR context
  * before calling into high prio ISR context.
  */
-BaseType_t xPortInterruptedFromISRContext();
+BaseType_t xPortInterruptedFromISRContext(void);
 
 /*
  * The structures and methods of manipulating the MPU are contained within the
@@ -203,9 +199,9 @@ BaseType_t xPortInterruptedFromISRContext();
 #endif
 
 /* Multi-core: get current core ID */
-static inline uint32_t IRAM_ATTR xPortGetCoreID() {
-    int id;
-    __asm__ (
+static inline uint32_t IRAM_ATTR xPortGetCoreID(void) {
+    uint32_t id;
+    __asm__ __volatile__ (
         "rsr.prid %0\n"
         " extui %0,%0,13,1"
         :"=r"(id));
@@ -215,11 +211,34 @@ static inline uint32_t IRAM_ATTR xPortGetCoreID() {
 /* Get tick rate per second */
 uint32_t xPortGetTickRateHz(void);
 
+
+static inline bool IRAM_ATTR xPortCanYield(void)
+{
+    uint32_t ps_reg = 0;
+
+    //Get the current value of PS (processor status) register
+    RSR(PS, ps_reg);
+
+    /*
+     * intlevel = (ps_reg & 0xf);
+     * excm  = (ps_reg >> 4) & 0x1;
+     * CINTLEVEL is max(excm * EXCMLEVEL, INTLEVEL), where EXCMLEVEL is 3.
+     * However, just return true, only intlevel is zero.
+     */
+
+    return ((ps_reg & PS_INTLEVEL_MASK) == 0);
+}
+
 #ifdef __cplusplus
 }
 #endif
 
-void uxPortCompareSetExtram(volatile uint32_t *addr, uint32_t compare, uint32_t *set);
+static inline void uxPortCompareSetExtram(volatile uint32_t *addr, uint32_t compare, uint32_t *set) 
+{
+#if defined(CONFIG_ESP32_SPIRAM_SUPPORT)    
+    compare_and_set_extram(addr, compare, set);
+#endif    
+}
 
 #endif /* PORTABLE_H */
 

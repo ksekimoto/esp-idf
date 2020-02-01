@@ -18,7 +18,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <esp_err.h>
-#include "esp_spi_flash.h"
 
 #define FLASH_SECTOR_SIZE 0x1000
 #define FLASH_BLOCK_SIZE 0x10000
@@ -29,6 +28,13 @@
    This header is available to source code in the bootloader &
    bootloader_support components only.
 */
+
+/**
+ * @brief Get number of free pages
+ *
+ * @return Number of free pages
+ */
+uint32_t bootloader_mmap_get_free_pages(void);
 
 /**
  * @brief Map a region of flash to data memory

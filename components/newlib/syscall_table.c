@@ -1,4 +1,4 @@
-// Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
+// Copyright 2015-2019 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,17 +22,22 @@
 #include <sys/signal.h>
 #include <sys/unistd.h>
 #include <sys/reent.h>
-#include "rom/libc_stubs.h"
 #include "esp_vfs.h"
 #include "esp_newlib.h"
 #include "sdkconfig.h"
+
+#if CONFIG_IDF_TARGET_ESP32
+#include "esp32/rom/libc_stubs.h"
+#elif CONFIG_IDF_TARGET_ESP32S2
+#include "esp32s2/rom/libc_stubs.h"
+#endif
 
 static struct _reent s_reent;
 
 extern int _printf_float(struct _reent *rptr,
                void *pdata,
                FILE * fp,
-               int (*pfunc) (struct _reent *, FILE *, _CONST char *, size_t len),
+               int (*pfunc) (struct _reent *, FILE *, const char *, size_t len),
                va_list * ap);
 
 
@@ -90,10 +95,12 @@ static struct syscall_stub_table s_stub_table = {
 #endif
 };
 
-void esp_setup_syscall_table()
+void esp_setup_syscall_table(void)
 {
     syscall_table_ptr_pro = &s_stub_table;
+#if !CONFIG_FREERTOS_UNICORE
     syscall_table_ptr_app = &s_stub_table;
+#endif
     _GLOBAL_REENT = &s_reent;
     environ = malloc(sizeof(char*));
     environ[0] = NULL;

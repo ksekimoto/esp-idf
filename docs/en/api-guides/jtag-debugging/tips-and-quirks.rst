@@ -1,5 +1,6 @@
 Tips and Quirks
 ---------------
+:link_to_translation:`zh_CN:[中文]`
 
 This section provides collection of all tips and quirks referred to from various parts of this guide.
 
@@ -35,7 +36,7 @@ Offset should be in hex format. To reset to the default behaviour you can specif
 
     Since GDB requests memory map from OpenOCD only once when connecting to it, this command should be specified in one of the TCL configuration files, or passed to OpenOCD via its command line. In the latter case command line should look like below:
 
-    ``bin/openocd -s share/openocd/scripts -f interface/ftdi/esp32_devkitj_v1.cfg -f board/esp-wroom-32.cfg -c "init; halt; esp32 appimage_offset 0x210000"``
+    ``openocd -f board/esp32-wrover-kit-3.3v.cfg.cfg -c "init; halt; esp32 appimage_offset 0x210000"``
 
     Another option is to execute that command via OpenOCD telnet session and then connect GDB, but it seems to be less handy.
 
@@ -54,10 +55,10 @@ Support options for OpenOCD at compile time
 
 ESP-IDF has some support options for OpenOCD debugging which can be set at compile time:
 
-* :ref:`CONFIG_ESP32_DEBUG_OCDAWARE` is enabled by default. If a panic or unhandled exception is thrown and a JTAG debugger is connected (ie openocd is running), ESP-IDF will break into the debugger.
+* :ref:`CONFIG_ESP32_DEBUG_OCDAWARE` is enabled by default. If a panic or unhandled exception is thrown and a JTAG debugger is connected (ie  OpenOCD is running), ESP-IDF will break into the debugger.
 * :ref:`CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK` (disabled by default) sets watchpoint index 1 (the second of two) at the end of any task stack. This is the most accurate way to debug task stack overflows. Click the link for more details.
 
-Please see the :ref:`make menuconfig <get-started-configure>` menu for more details on setting compile-time options.
+Please see the :ref:`project configuration menu <get-started-configure>` menu for more details on setting compile-time options.
 
 .. _jtag-debugging-tip-freertos-support:
 
@@ -72,11 +73,11 @@ OpenOCD has explicit support for the ESP-IDF FreeRTOS. GDB can see FreeRTOS task
 Why to set SPI flash voltage in OpenOCD configuration?
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The MTDI pin of ESP32, being among four pins used for JTAG communication, is also one of ESP32's bootstrapping pins. On power up ESP32 is sampling binary level on MTDI to set it's internal voltage regulator used to supply power to external SPI flash chip. If binary level on MDTI pin on power up is low, the voltage regulator is set to deliver 3.3V, if it is high, then the voltage is set to 1.8V. The MTDI pin should have a pull-up or may rely on internal weak pull down resistor (see ESP32 Datasheet for details), depending on the type of SPI chip used. Once JTAG is connected, it overrides the pull-up or pull-down resistor that is supposed to do the bootstrapping. 
+The MTDI pin of ESP32, being among four pins used for JTAG communication, is also one of ESP32's bootstrapping pins. On power up ESP32 is sampling binary level on MTDI to set it's internal voltage regulator used to supply power to external SPI flash chip. If binary level on MDTI pin on power up is low, the voltage regulator is set to deliver 3.3 V, if it is high, then the voltage is set to 1.8 V. The MTDI pin should have a pull-up or may rely on internal weak pull down resistor (see `ESP32 Series Datasheet <https://www.espressif.com/sites/default/files/documentation/esp32_datasheet_en.pdf>`_ for details), depending on the type of SPI chip used. Once JTAG is connected, it overrides the pull-up or pull-down resistor that is supposed to do the bootstrapping. 
 
 To handle this issue OpenOCD's board configuration file (e.g. ``boards\esp-wroom-32.cfg`` for ESP32-WROOM-32 module) provides ``ESP32_FLASH_VOLTAGE`` parameter to set the idle state of the ``TDO`` line to a specified binary level, therefore reducing the chance of a bad bootup of application due to incorrect flash voltage.
 
-Check specification of ESP32 module connected to JTAG, what is the power supply voltage of SPI flash chip. Then set ``ESP32_FLASH_VOLTAGE`` accordingly. Most WROOM modules use 3.3V flash, while WROVER modules use 1.8V flash. 
+Check specification of ESP32 module connected to JTAG, what is the power supply voltage of SPI flash chip. Then set ``ESP32_FLASH_VOLTAGE`` accordingly. Most WROOM modules use 3.3 V flash, while WROVER modules use 1.8 V flash. 
 
 
 .. _jtag-debugging-tip-optimize-jtag-speed:
@@ -111,12 +112,11 @@ On startup, debugger is issuing sequence of commands to reset the chip and halt 
 Configuration of OpenOCD for specific target
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-OpenOCD needs to be told what JTAG adapter **interface** to use, as well as what type of **board** and processor the JTAG adapter is connected to. To do so, use existing configuration files located in OpenOCD's ``share/openocd/scripts/interface`` and ``share/openocd/scripts/board`` folders. 
+OpenOCD needs to be told what JTAG adapter to use and processor the JTAG adapter is connected to. To do so, use existing **board** configuration files located in OpenOCD's ``share/openocd/scripts/board`` folder.
 
 For example, if you connect to ESP-WROVER-KIT with ESP-WROOM-32 module installed (see section :ref:`esp-modules-and-boards-esp-wrover-kit-v1`), use the following configuration files:
 
-* ``interface/ftdi/esp32_devkitj_v1.cfg``
-* ``board/esp-wroom-32.cfg``
+* ``board/esp32-wrover-kit-3.3v.cfg``
 
 Optionally prepare configuration by yourself. To do so, you can check existing files and modify them to match you specific hardware. Below is the summary of available configuration parameters for **board** configuration.
 
@@ -160,7 +160,7 @@ Power supply voltage of ESP32's SPI flash chip
 
     set ESP32_FLASH_VOLTAGE 1.8
 
-Comment out this line to set 3.3V, ref: :ref:`jtag-debugging-tip-code-flash-voltage`
+Comment out this line to set 3.3 V, ref: :ref:`jtag-debugging-tip-code-flash-voltage`
 
 
 Configuration file for ESP32 targets
@@ -234,6 +234,16 @@ Below is an excerpt from series of errors reported by GDB after the application 
     cpu1: xtensa_resume (line 431): DSR (FFFFFFFF) indicates DIR instruction generated an overrun!
 
 
+.. _jtag-debugging-tip-at-firmware-issue:
+
+JTAG and ESP32-WROOM-32 AT firmware Compatibility Issue
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ESP32-WROOM series of modules come pre-flashed with AT firmware. This firmware configures the pins GPIO12 to GPIO15 as SPI slave interface, which makes using JTAG impossible.
+
+To make JTAG available, build new firmware that is not using pins GPIO12 to GPIO15 dedicated to JTAG communication. After that, flash the firmware onto your module. See also :ref:`jtag-debugging-tip-jtag-pins-reconfigured`.
+
+
 .. _jtag-debugging-tip-reporting-issues:
 
 Reporting issues with OpenOCD / GDB
@@ -258,17 +268,13 @@ In case you encounter a problem with OpenOCD or GDB programs itself and do not f
 
         ::
 
-            bin/openocd -l openocd_log.txt -d 3 -s share/openocd/scripts -f interface/ftdi/esp32_devkitj_v1.cfg -f board/esp-wroom-32.cfg
+            openocd -l openocd_log.txt -d 3 -f board/esp32-wrover-kit-3.3v.cfg
 
         Logging to a file this way will prevent information displayed on the terminal. This may be a good thing taken amount of information provided, when increased debug level ``-d 3`` is set. If you still like to see the log on the screen, then use another command instead:
 
         ::
 
-            bin/openocd -d 3 -s share/openocd/scripts -f interface/ftdi/esp32_devkitj_v1.cfg -f board/esp-wroom-32.cfg 2>&1 | tee openocd.log
-
-        .. note::
-
-            See :ref:`jtag-debugging-building-openocd` for slightly different command format, when running OpenOCD built from sources.
+            openocd -d 3 -f board/esp32-wrover-kit-3.3v.cfg 2>&1 | tee openocd.log
 
     Debugger:
 

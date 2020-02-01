@@ -11,9 +11,9 @@
 #include <stdlib.h>
 #include "linenoise/linenoise.h"
 #include "argtable3/argtable3.h"
-#include "tcpip_adapter.h"
+#include "esp_netif.h"
 #include "esp_console.h"
-#include "esp_event_loop.h"
+#include "esp_event.h"
 #include "esp_vfs_dev.h"
 #include "esp_vfs_fat.h"
 #include "esp_wifi.h"
@@ -27,16 +27,16 @@
 #include "cmd_decl.h"
 #include "sdkconfig.h"
 
-#if CONFIG_STORE_HISTORY
+#if CONFIG_SNIFFER_STORE_HISTORY
 #define HISTORY_MOUNT_POINT "/data"
 #define HISTORY_FILE_PATH HISTORY_MOUNT_POINT "/history.txt"
 #endif
 
 static const char *TAG = "example";
 
-#if CONFIG_STORE_HISTORY
+#if CONFIG_SNIFFER_STORE_HISTORY
 /* Initialize filesystem for command history store */
-static void initialize_filesystem()
+static void initialize_filesystem(void)
 {
     static wl_handle_t wl_handle;
     const esp_vfs_fat_mount_config_t mount_config = {
@@ -51,7 +51,7 @@ static void initialize_filesystem()
 }
 #endif
 
-static void initialize_nvs()
+static void initialize_nvs(void)
 {
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -62,10 +62,10 @@ static void initialize_nvs()
 }
 
 /* Initialize wifi with tcp/ip adapter */
-static void initialize_wifi()
+static void initialize_wifi(void)
 {
-    tcpip_adapter_init();
-    ESP_ERROR_CHECK(esp_event_loop_init(NULL, NULL));
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
@@ -73,11 +73,10 @@ static void initialize_wifi()
 }
 
 /* Initialize console component */
-static void initialize_console()
+static void initialize_console(void)
 {
-    /* Disable buffering on stdin and stdout */
+    /* Disable buffering on stdin */
     setvbuf(stdin, NULL, _IONBF, 0);
-    setvbuf(stdout, NULL, _IONBF, 0);
 
     /* Minicom, screen, idf_monitor send CR when ENTER key is pressed */
     esp_vfs_dev_uart_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
@@ -85,11 +84,11 @@ static void initialize_console()
     esp_vfs_dev_uart_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
 
     /* Install UART driver for interrupt-driven reads and writes */
-    ESP_ERROR_CHECK(uart_driver_install(CONFIG_CONSOLE_UART_NUM,
+    ESP_ERROR_CHECK(uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM,
                                         256, 0, 0, NULL, 0));
 
     /* Tell VFS to use UART driver */
-    esp_vfs_dev_uart_use_driver(CONFIG_CONSOLE_UART_NUM);
+    esp_vfs_dev_uart_use_driver(CONFIG_ESP_CONSOLE_UART_NUM);
 
     /* Initialize the console */
     esp_console_config_t console_config = {
@@ -114,12 +113,13 @@ static void initialize_console()
     /* Set command history size */
     linenoiseHistorySetMaxLen(100);
 
-#if CONFIG_STORE_HISTORY
+#if CONFIG_SNIFFER_STORE_HISTORY
     /* Load command history from filesystem */
     linenoiseHistoryLoad(HISTORY_FILE_PATH);
 #endif
 }
 
+#if CONFIG_SNIFFER_PCAP_DESTINATION_SD
 static struct {
     struct arg_str *device;
     struct arg_end *end;
@@ -155,7 +155,6 @@ static int mount(int argc, char **argv)
         // initialize SD card and mount FAT filesystem.
         sdmmc_card_t *card;
         esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_SNIFFER_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
-
         if (ret != ESP_OK) {
             if (ret == ESP_FAIL) {
                 ESP_LOGE(TAG, "Failed to mount filesystem. "
@@ -173,7 +172,7 @@ static int mount(int argc, char **argv)
     return 0;
 }
 
-static void register_mount()
+static void register_mount(void)
 {
     mount_args.device = arg_str1(NULL, NULL, "<sd>", "choose a proper device to mount/unmount");
     mount_args.end = arg_end(1);
@@ -194,7 +193,7 @@ static int unmount(int argc, char **argv)
         arg_print_errors(stderr, mount_args.end, argv[0]);
         return 1;
     }
-    /* mount sd card */
+    /* unmount sd card */
     if (!strncmp(mount_args.device->sval[0], "sd", 2)) {
         if (esp_vfs_fat_sdmmc_unmount() != ESP_OK) {
             ESP_LOGE(TAG, "Card unmount failed");
@@ -205,7 +204,7 @@ static int unmount(int argc, char **argv)
     return 0;
 }
 
-static void register_unmount()
+static void register_unmount(void)
 {
     mount_args.device = arg_str1(NULL, NULL, "<sd>", "choose a proper device to mount/unmount");
     mount_args.end = arg_end(1);
@@ -218,12 +217,13 @@ static void register_unmount()
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&cmd));
 }
+#endif // CONFIG_SNIFFER_PCAP_DESTINATION_SD
 
 void app_main(void)
 {
     initialize_nvs();
 
-#if CONFIG_STORE_HISTORY
+#if CONFIG_SNIFFER_STORE_HISTORY
     initialize_filesystem();
 #endif
 
@@ -234,8 +234,10 @@ void app_main(void)
 
     /* Register commands */
     esp_console_register_help_command();
+#if CONFIG_SNIFFER_PCAP_DESTINATION_SD
     register_mount();
     register_unmount();
+#endif
     register_sniffer();
     register_system();
 
@@ -284,7 +286,7 @@ void app_main(void)
         /* Add the command to the history */
         linenoiseHistoryAdd(line);
 
-#if CONFIG_STORE_HISTORY
+#if CONFIG_SNIFFER_STORE_HISTORY
         /* Save command history to filesystem */
         linenoiseHistorySave(HISTORY_FILE_PATH);
 #endif

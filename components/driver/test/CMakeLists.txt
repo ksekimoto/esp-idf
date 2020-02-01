@@ -1,6 +1,4 @@
-set(COMPONENT_SRCDIRS ".")
-set(COMPONENT_ADD_INCLUDEDIRS ".")
-
-set(COMPONENT_REQUIRES unity test_utils driver nvs_flash)
-
-register_component()
+idf_component_register(SRC_DIRS . param_test
+                       INCLUDE_DIRS include param_test/include
+                       REQUIRES unity test_utils driver nvs_flash esp_serial_slave_link
+                      )
